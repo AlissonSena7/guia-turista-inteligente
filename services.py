@@ -19,8 +19,69 @@ def verificar_token_google(client: httpx.Client, token: str) -> dict[str, Any] |
     Verifica se o token foi emitido para o GOOGLE_CLIENT_ID configurado no projeto
     e retorna o payload do usuário (sub, name, email, picture) ou None se for inválido.
     """
-    # TODO (Aluno 1): Implementar a validação do token JWT junto à API do Google OAuth2
-    pass
+    if not token or not isinstance(token, str):
+        return None
+
+    token_limpo = token.strip()
+    if not token_limpo:
+        return None
+
+    url = "https://oauth2.googleapis.com/tokeninfo"
+    params: dict[str, Any] = {"id_token": token_limpo}
+
+    try:
+        requisicao_cliente = client if client is not None else httpx.Client(timeout=6.0)
+        resposta = requisicao_cliente.get(url, params=params, timeout=6.0)
+        if client is None:
+            requisicao_cliente.close()
+
+        if resposta.status_code != 200:
+            return None
+
+        payload = resposta.json()
+        if not isinstance(payload, dict):
+            return None
+
+        error_desc = payload.get("error_description") or payload.get("error")
+        if error_desc:
+            return None
+
+        aud_client = str(payload.get("aud", "")).strip()
+        if not aud_client:
+            return None
+
+        client_ids_validos = {str(GOOGLE_CLIENT_ID).strip()}
+        if aud_client not in client_ids_validos:
+            issuer_azp = str(payload.get("azp", "")).strip()
+            if issuer_azp not in client_ids_validos:
+                return None
+
+        sub_usuario = str(payload.get("sub", "")).strip()
+        if not sub_usuario:
+            return None
+
+        email_usuario = str(payload.get("email", "")).strip()
+        email_verificado = str(payload.get("email_verified", "")).lower() == "true"
+        nome_usuario = str(payload.get("name", "")).strip() or email_usuario.split("@")[0]
+        foto_usuario = str(payload.get("picture", "")).strip()
+        expiracao_token = str(payload.get("exp", "")).strip()
+
+        return {
+            "sub": sub_usuario,
+            "id": sub_usuario,
+            "email": email_usuario,
+            "email_verificado": email_verificado,
+            "nome": nome_usuario,
+            "name": nome_usuario,
+            "foto": foto_usuario,
+            "picture": foto_usuario,
+            "aud": aud_client,
+            "exp": expiracao_token,
+            "autenticado": True,
+        }
+
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, TypeError, KeyError):
+        return None
 
 
 def obter_sigla_uf(admin1: str, uf_informada: str = "") -> str:
