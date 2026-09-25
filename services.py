@@ -141,5 +141,51 @@ def obter_percurso(
     Em caso de trajetos sem estradas (ex: ilhas) ou timeout (6.0s),
     retorna dicionário com fallback descritivo ('Sem rota direta' / 'Considere voos ou barcos').
     """
-    # TODO (Aluno 2): Implementar o cálculo de rota e distância via OSRM com conversão de unidades
-    pass
+    fallback: dict[str, str] = {
+        "distancia": "Sem rota direta",
+        "tempo": "Considere voos ou barcos",
+        "duracao": "Considere voos ou barcos",
+    }
+
+    if (lat_o == 0.0 and lon_o == 0.0) or (lat_d == 0.0 and lon_d == 0.0):
+        return fallback
+
+    url = f"https://router.project-osrm.org/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}"
+
+    try:
+        if client is not None:
+            resposta = client.get(url, params={"overview": "false"}, timeout=6.0)
+        else:
+            with httpx.Client(timeout=6.0) as default_client:
+                resposta = default_client.get(url, params={"overview": "false"})
+
+        if resposta.status_code != 200:
+            return fallback
+
+        dados = resposta.json()
+        if dados.get("code") != "Ok" or not dados.get("routes"):
+            return fallback
+
+        rota_principal = dados["routes"][0]
+        distancia_metros = float(rota_principal.get("distance", 0.0))
+        duracao_segundos = float(rota_principal.get("duration", 0.0))
+
+        dist_km = distancia_metros / 1000.0
+        dur_min = round(duracao_segundos / 60.0)
+
+        distancia_str = f"{dist_km:.1f} km" if dist_km >= 1 else f"{dist_km:.2f} km"
+
+        if dur_min >= 60:
+            horas = dur_min // 60
+            minutos = dur_min % 60
+            tempo_str = f"{horas}h {minutos}min" if minutos > 0 else f"{horas}h"
+        else:
+            tempo_str = f"{dur_min} min"
+
+        return {
+            "distancia": distancia_str,
+            "tempo": tempo_str,
+            "duracao": f"{dur_min} min",
+        }
+    except (requests.RequestException, httpx.HTTPError, KeyError, ValueError, TypeError):
+        return fallback
