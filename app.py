@@ -198,15 +198,17 @@ def ver_viagens_json():
 @app.errorhandler(405)
 def metodo_nao_permitido(error):
     """Fallback para acessos GET em rotas POST (ex: digitar /viagens/criar na barra de endereços)."""
-    # TODO (Aluno 4): Interceptar erro 405 e redirecionar suavemente para url_for('index')
-    pass
+    if request.path.startswith("/api/") or request.path.endswith("/json"):
+        return jsonify({"erro": "Método HTTP não permitido", "status": 405}), 405
+    return redirect(url_for("index"))
 
 
 @app.errorhandler(404)
 def pagina_nao_encontrada(error):
     """Fallback para rotas inexistentes redirecionando suavemente para a página principal."""
-    # TODO (Aluno 4): Interceptar erro 404 e redirecionar suavemente para url_for('index')
-    pass
+    if request.path.startswith("/api/") or request.path.endswith("/json"):
+        return jsonify({"erro": "Recurso não encontrado", "status": 404}), 404
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
