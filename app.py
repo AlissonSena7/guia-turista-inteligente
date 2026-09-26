@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any
+from threading import Lock
 
 import httpx
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
@@ -32,7 +33,10 @@ app.secret_key = os.getenv("SECRET_KEY", "guia-turista-secret-key-2026-python")
 
 # Controle de concorrência para leitura e escrita segura no arquivo JSON
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-lock_arquivo_json = threading.Lock()
+lock_viagens = Lock()
+if not VIAGENS_FILE.exists():
+    with open(VIAGENS_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
 
 # Armazenamento volátil de roteiros em memória para sessões de visitantes
 viagens_visitante_memoria: dict[str, list[dict[str, Any]]] = {}
@@ -96,8 +100,24 @@ def adicionar_viagem_usuario(
     perfil_usuario: dict[str, Any] | None = None,
 ) -> None:
     """Adiciona um novo roteiro: na memória para visitante ou grava no JSON para usuário logado."""
-    # TODO (Aluno 4): Implementar inserção de novo roteiro na estrutura de dados
-    pass
+    item["id"] = str(uuid.uuid4())
+    item["data_criacao"] = datetime.now().isoformat()
+    item["status"] = "concluida"
+    
+    with lock_viagens:
+        try:
+            with open(VIAGENS_FILE, "r", encoding="utf-8") as f:
+                try:
+                    dados = json.load(f)
+                except json.JSONDecodeError:
+                    dados = []
+        except FileNotFoundError:
+            dados = []
+            
+        dados.append(item)
+        
+        with open(VIAGENS_FILE, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
 def remover_viagem_usuario(user_id: str, viagem_id: str) -> None:
