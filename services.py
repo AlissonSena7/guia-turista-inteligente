@@ -19,8 +19,69 @@ def verificar_token_google(client: httpx.Client, token: str) -> dict[str, Any] |
     Verifica se o token foi emitido para o GOOGLE_CLIENT_ID configurado no projeto
     e retorna o payload do usuário (sub, name, email, picture) ou None se for inválido.
     """
-    # TODO (Aluno 1): Implementar a validação do token JWT junto à API do Google OAuth2
-    pass
+    if not token or not isinstance(token, str):
+        return None
+
+    token_limpo = token.strip()
+    if not token_limpo:
+        return None
+
+    url = "https://oauth2.googleapis.com/tokeninfo"
+    params: dict[str, Any] = {"id_token": token_limpo}
+
+    try:
+        requisicao_cliente = client if client is not None else httpx.Client(timeout=6.0)
+        resposta = requisicao_cliente.get(url, params=params, timeout=6.0)
+        if client is None:
+            requisicao_cliente.close()
+
+        if resposta.status_code != 200:
+            return None
+
+        payload = resposta.json()
+        if not isinstance(payload, dict):
+            return None
+
+        error_desc = payload.get("error_description") or payload.get("error")
+        if error_desc:
+            return None
+
+        aud_client = str(payload.get("aud", "")).strip()
+        if not aud_client:
+            return None
+
+        client_ids_validos = {str(GOOGLE_CLIENT_ID).strip()}
+        if aud_client not in client_ids_validos:
+            issuer_azp = str(payload.get("azp", "")).strip()
+            if issuer_azp not in client_ids_validos:
+                return None
+
+        sub_usuario = str(payload.get("sub", "")).strip()
+        if not sub_usuario:
+            return None
+
+        email_usuario = str(payload.get("email", "")).strip()
+        email_verificado = str(payload.get("email_verified", "")).lower() == "true"
+        nome_usuario = str(payload.get("name", "")).strip() or email_usuario.split("@")[0]
+        foto_usuario = str(payload.get("picture", "")).strip()
+        expiracao_token = str(payload.get("exp", "")).strip()
+
+        return {
+            "sub": sub_usuario,
+            "id": sub_usuario,
+            "email": email_usuario,
+            "email_verificado": email_verificado,
+            "nome": nome_usuario,
+            "name": nome_usuario,
+            "foto": foto_usuario,
+            "picture": foto_usuario,
+            "aud": aud_client,
+            "exp": expiracao_token,
+            "autenticado": True,
+        }
+
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, TypeError, KeyError):
+        return None
 
 
 def obter_sigla_uf(admin1: str, uf_informada: str = "") -> str:
@@ -29,8 +90,21 @@ def obter_sigla_uf(admin1: str, uf_informada: str = "") -> str:
     Caso a API retorne um nome completo (ex: 'Piauí'), normaliza para a sigla 'PI'.
     Caso contrário, utiliza a UF informada como fallback se for válida.
     """
-    # TODO (Aluno 1): Implementar a conversão e normalização da UF
-    pass
+    if admin1:
+        admin1_normalizado = admin1.strip().lower()
+        for sigla, nome_estado in ESTADOS_BRASIL.items():
+            if nome_estado.lower() == admin1_normalizado:
+                return sigla
+        admin1_limpo = admin1.strip().upper()
+        if admin1_limpo in ESTADOS_BRASIL:
+            return admin1_limpo
+
+    if uf_informada:
+        uf_limpa = uf_informada.strip().upper()
+        if uf_limpa in ESTADOS_BRASIL:
+            return uf_limpa
+
+    return uf_informada.strip().upper() if uf_informada else ""
 
 
 def buscar_coordenadas(
@@ -41,8 +115,75 @@ def buscar_coordenadas(
     Retorna a tupla (latitude, longitude, nome_formatado). Caso a busca falhe,
     aplica fallback seguro retornando (0.0, 0.0, "Cidade - UF").
     """
-    # TODO (Aluno 1): Implementar a consulta à API de Geocodificação Open-Meteo com filtro Brasil
-    pass
+    cidade_limpa = cidade.strip() if cidade else ""
+    uf_limpa = uf.strip().upper() if uf else ""
+    fallback: tuple[float, float, str] = (
+        0.0,
+        0.0,
+        f"{cidade_limpa} - {uf_limpa}" if cidade_limpa else "Cidade - UF",
+    )
+
+    if not cidade_limpa:
+        return fallback
+
+    url = "https://geocoding-api.open-meteo.com/v1/search"
+    params: dict[str, Any] = {
+        "name": cidade_limpa,
+        "country": "BR",
+        "language": "pt",
+        "count": 5,
+        "format": "json",
+    }
+
+    try:
+        requisicao_cliente = client if client is not None else httpx.Client(timeout=5.0)
+        resposta = requisicao_cliente.get(url, params=params, timeout=5.0)
+        if client is None:
+            requisicao_cliente.close()
+
+        if resposta.status_code != 200:
+            return fallback
+
+        dados = resposta.json()
+        resultados = dados.get("results", [])
+        if not resultados or not isinstance(resultados, list):
+            return fallback
+
+        candidato_brasil: dict[str, Any] | None = None
+        for r in resultados:
+            if not isinstance(r, dict):
+                continue
+            pais_code = str(r.get("country_code", "")).upper()
+            admin1_api = str(r.get("admin1", ""))
+            sigla_detectada = obter_sigla_uf(admin1_api, uf_limpa)
+
+            if pais_code != "BR":
+                continue
+
+            if uf_limpa and sigla_detectada == uf_limpa:
+                candidato_brasil = r
+                break
+
+            if candidato_brasil is None:
+                candidato_brasil = r
+
+        if candidato_brasil is None:
+            return fallback
+
+        lat = float(candidato_brasil.get("latitude", 0.0))
+        lon = float(candidato_brasil.get("longitude", 0.0))
+        nome_cidade = str(candidato_brasil.get("name", cidade_limpa))
+        admin1_retornado = str(candidato_brasil.get("admin1", ""))
+        sigla_final = obter_sigla_uf(admin1_retornado, uf_limpa) or uf_limpa
+
+        nome_formatado = (
+            f"{nome_cidade} - {sigla_final}" if sigla_final else nome_cidade
+        )
+
+        return (lat, lon, nome_formatado)
+
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, TypeError, KeyError):
+        return fallback
 
 
 # ==============================================================================
