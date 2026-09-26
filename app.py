@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any
+from threading import Lock
 
 import httpx
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
@@ -32,7 +33,10 @@ app.secret_key = os.getenv("SECRET_KEY", "guia-turista-secret-key-2026-python")
 
 # Controle de concorrência para leitura e escrita segura no arquivo JSON
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-lock_arquivo_json = threading.Lock()
+lock_viagens = Lock()
+if not VIAGENS_FILE.exists():
+    with open(VIAGENS_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
 
 # Armazenamento volátil de roteiros em memória para sessões de visitantes
 viagens_visitante_memoria: dict[str, list[dict[str, Any]]] = {}
@@ -50,8 +54,11 @@ lock_requisicoes = threading.Lock()
 
 def sanitizar_entrada(texto: str, max_len: int = 80) -> str:
     """Higieniza entradas de texto removendo tags HTML, caracteres de controle e espaços extras."""
-    # TODO (Aluno 4): Implementar a sanitização de texto via regex r'<[^>]*>'
-    pass
+    if not isinstance(texto, str):
+        return ""
+    texto_sem_html = re.sub(r'<[^>]*>', '', texto)
+    texto_limpo = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', texto_sem_html)
+    return " ".join(texto_limpo.split())[:max_len]
 
 
 def criar_estrutura_padrao_viagens() -> dict[str, Any]:
@@ -96,8 +103,24 @@ def adicionar_viagem_usuario(
     perfil_usuario: dict[str, Any] | None = None,
 ) -> None:
     """Adiciona um novo roteiro: na memória para visitante ou grava no JSON para usuário logado."""
-    # TODO (Aluno 4): Implementar inserção de novo roteiro na estrutura de dados
-    pass
+    item["id"] = str(uuid.uuid4())
+    item["data_criacao"] = datetime.now().isoformat()
+    item["status"] = "concluida"
+    
+    with lock_viagens:
+        try:
+            with open(VIAGENS_FILE, "r", encoding="utf-8") as f:
+                try:
+                    dados = json.load(f)
+                except json.JSONDecodeError:
+                    dados = []
+        except FileNotFoundError:
+            dados = []
+            
+        dados.append(item)
+        
+        with open(VIAGENS_FILE, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
 def remover_viagem_usuario(user_id: str, viagem_id: str) -> None:
@@ -163,22 +186,29 @@ def deletar_viagem(viagem_id: str):
 @app.route("/api/viagens", methods=["GET"])
 def ver_viagens_json():
     """Retorna a base consolidada de static/data/viagens.json com suporte dinâmico a visitantes."""
-    # TODO (Aluno 4): Retornar jsonify() da árvore consolidada de viagens
-    pass
+    with lock_viagens:
+        try:
+            with open(VIAGENS_FILE, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            dados = []
+    return jsonify(dados), 200
 
 
 @app.errorhandler(405)
 def metodo_nao_permitido(error):
     """Fallback para acessos GET em rotas POST (ex: digitar /viagens/criar na barra de endereços)."""
-    # TODO (Aluno 4): Interceptar erro 405 e redirecionar suavemente para url_for('index')
-    pass
+    if request.path.startswith("/api/") or request.path.endswith("/json"):
+        return jsonify({"erro": "Método HTTP não permitido", "status": 405}), 405
+    return redirect(url_for("index"))
 
 
 @app.errorhandler(404)
 def pagina_nao_encontrada(error):
     """Fallback para rotas inexistentes redirecionando suavemente para a página principal."""
-    # TODO (Aluno 4): Interceptar erro 404 e redirecionar suavemente para url_for('index')
-    pass
+    if request.path.startswith("/api/") or request.path.endswith("/json"):
+        return jsonify({"erro": "Recurso não encontrado", "status": 404}), 404
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
