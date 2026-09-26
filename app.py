@@ -54,8 +54,11 @@ lock_requisicoes = threading.Lock()
 
 def sanitizar_entrada(texto: str, max_len: int = 80) -> str:
     """Higieniza entradas de texto removendo tags HTML, caracteres de controle e espaços extras."""
-    # TODO (Aluno 4): Implementar a sanitização de texto via regex r'<[^>]*>'
-    pass
+    if not isinstance(texto, str):
+        return ""
+    texto_sem_html = re.sub(r'<[^>]*>', '', texto)
+    texto_limpo = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', texto_sem_html)
+    return " ".join(texto_limpo.split())[:max_len]
 
 
 def criar_estrutura_padrao_viagens() -> dict[str, Any]:
@@ -183,8 +186,13 @@ def deletar_viagem(viagem_id: str):
 @app.route("/api/viagens", methods=["GET"])
 def ver_viagens_json():
     """Retorna a base consolidada de static/data/viagens.json com suporte dinâmico a visitantes."""
-    # TODO (Aluno 4): Retornar jsonify() da árvore consolidada de viagens
-    pass
+    with lock_viagens:
+        try:
+            with open(VIAGENS_FILE, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            dados = []
+    return jsonify(dados), 200
 
 
 @app.errorhandler(405)
