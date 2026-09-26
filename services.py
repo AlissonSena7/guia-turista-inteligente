@@ -1,12 +1,12 @@
 # Serviços de integração com APIs externas (Google OAuth, Open-Meteo e OSRM)
 
-import re
+import math
 from typing import Any
 
 import httpx
 import requests
 
-from config import ESTADOS_BRASIL, GOOGLE_CLIENT_ID
+from config import ESTADOS_BRASIL, GOOGLE_CLIENT_ID, OSRM_BASE_URL
 
 # ==============================================================================
 # 👤 RESPONSABILIDADE DO ALUNO 1: APIs REST, Autenticação JWT e Geocodificação
@@ -274,13 +274,63 @@ def obter_clima(client: httpx.Client, lat: float, lon: float) -> dict[str, str]:
         return fallback
 
 
+def _coordenada_normalizada(lat: Any, lon: Any) -> tuple[float, float] | None:
+    """Valida e normaliza um par (lat, lon) para o formato float exigido pelo OSRM.
+
+    Retorna None quando a coordenada é ausente, não numérica, está fora da faixa
+    geodésica (lat -90..90 / lon -180..180) ou é o sentinela (0.0, 0.0) devolvido
+    pelo fallback de geocodificação.
+    """
+    try:
+        lat_num = float(lat)
+        lon_num = float(lon)
+    except (TypeError, ValueError):
+        return None
+
+    if math.isnan(lat_num) or math.isnan(lon_num):
+        return None
+    if not -90.0 <= lat_num <= 90.0 or not -180.0 <= lon_num <= 180.0:
+        return None
+    if lat_num == 0.0 and lon_num == 0.0:
+        return None
+
+    return lat_num, lon_num
+
+
+def _medida_positiva(valor: Any) -> float | None:
+    """Converte um campo numérico do OSRM em float, exigindo que seja maior que zero.
+
+    Retorna None para valores ausentes, não numéricos, booleanos, NaN ou <= 0,
+    evitando que a aplicação exiba distância/duração inventadas.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return None
+    numero = float(valor)
+    if math.isnan(numero) or numero <= 0.0:
+        return None
+    return numero
+
+
+def formatar_duracao(duracao_segundos: float) -> str:
+    """Converte a duração em segundos do OSRM para o formato legível 'Xh YYmin'."""
+    total_minutos = max(round(duracao_segundos / 60.0), 1)
+    horas, minutos = divmod(total_minutos, 60)
+
+    if horas and minutos:
+        return f"{horas}h {minutos:02d}min"
+    if horas:
+        return f"{horas}h"
+    return f"{total_minutos} min"
+
+
 def obter_percurso(
     client: httpx.Client, lat_o: float, lon_o: float, lat_d: float, lon_d: float
 ) -> dict[str, str]:
     """Consulta o OSRM e calcula distância em km e duração de viagem de carro.
 
-    Em caso de trajetos sem estradas (ex: ilhas) ou timeout (6.0s),
-    retorna dicionário com fallback descritivo ('Sem rota direta' / 'Considere voos ou barcos').
+    Em caso de trajetos sem estradas (ex: ilhas), coordenadas inválidas ou
+    timeout (6.0s), retorna dicionário com fallback descritivo
+    ('Sem rota direta' / 'Considere voos ou barcos').
     """
     fallback: dict[str, str] = {
         "distancia": "Sem rota direta",
@@ -288,10 +338,17 @@ def obter_percurso(
         "duracao": "Considere voos ou barcos",
     }
 
-    if (lat_o == 0.0 and lon_o == 0.0) or (lat_d == 0.0 and lon_d == 0.0):
+    origem = _coordenada_normalizada(lat_o, lon_o)
+    destino = _coordenada_normalizada(lat_d, lon_d)
+    if origem is None or destino is None:
         return fallback
 
-    url = f"https://router.project-osrm.org/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}"
+    lat_origem, lon_origem = origem
+    lat_destino, lon_destino = destino
+    url = (
+        f"{OSRM_BASE_URL}/route/v1/driving/"
+        f"{lon_origem},{lat_origem};{lon_destino},{lat_destino}"
+    )
 
     try:
         if client is not None:
@@ -303,30 +360,36 @@ def obter_percurso(
         if resposta.status_code != 200:
             return fallback
 
-        dados = resposta.json()
-        if dados.get("code") != "Ok" or not dados.get("routes"):
+        try:
+            dados = resposta.json()
+        except ValueError:
             return fallback
 
-        rota_principal = dados["routes"][0]
-        distancia_metros = float(rota_principal.get("distance", 0.0))
-        duracao_segundos = float(rota_principal.get("duration", 0.0))
+        if not isinstance(dados, dict) or dados.get("code") != "Ok":
+            return fallback
+
+        rotas = dados.get("routes")
+        if not isinstance(rotas, list) or not rotas:
+            return fallback
+
+        rota_principal = rotas[0]
+        if not isinstance(rota_principal, dict):
+            return fallback
+
+        distancia_metros = _medida_positiva(rota_principal.get("distance"))
+        duracao_segundos = _medida_positiva(rota_principal.get("duration"))
+        if distancia_metros is None or duracao_segundos is None:
+            return fallback
 
         dist_km = distancia_metros / 1000.0
-        dur_min = round(duracao_segundos / 60.0)
-
         distancia_str = f"{dist_km:.1f} km" if dist_km >= 1 else f"{dist_km:.2f} km"
 
-        if dur_min >= 60:
-            horas = dur_min // 60
-            minutos = dur_min % 60
-            tempo_str = f"{horas}h {minutos}min" if minutos > 0 else f"{horas}h"
-        else:
-            tempo_str = f"{dur_min} min"
+        total_minutos = max(round(duracao_segundos / 60.0), 1)
 
         return {
             "distancia": distancia_str,
-            "tempo": tempo_str,
-            "duracao": f"{dur_min} min",
+            "tempo": formatar_duracao(duracao_segundos),
+            "duracao": f"{total_minutos} min",
         }
     except (requests.RequestException, httpx.HTTPError, KeyError, ValueError, TypeError):
         return fallback
