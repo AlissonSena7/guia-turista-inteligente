@@ -11,7 +11,16 @@ from typing import Any
 from threading import Lock
 
 import httpx
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import (
+    Flask,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 
 from config import (
     DATA_DIR,
@@ -20,7 +29,7 @@ from config import (
     PORT,
     VIAGENS_FILE,
 )
-from planejamento import obter_guia_destino_com_diagnostico
+from planejamento import orquestrar_roteiro
 from services import (
     buscar_coordenadas,
     obter_clima,
@@ -45,6 +54,16 @@ viagens_visitante_memoria: dict[str, list[dict[str, Any]]] = {}
 requisicoes_ativas: set[str] = set()
 requisicoes_recentes: dict[str, float] = {}
 lock_requisicoes = threading.Lock()
+
+# Sessão do modo visitante (mantida apenas em memória)
+USUARIO_VISITANTE = "visitante"
+AVATAR_VISITANTE = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+    "width='1' height='1'/%3E"
+)
+
+# Janela (segundos) para descartar reenvio/clique duplicado da mesma viagem
+JANELA_IDEMPOTENCIA_SEGUNDOS = 8.0
 
 
 # ==============================================================================
@@ -134,46 +153,173 @@ def remover_viagem_usuario(user_id: str, viagem_id: str) -> None:
 # ==============================================================================
 
 
+def usuario_atual() -> dict[str, Any] | None:
+    """Retorna o dicionário do usuário autenticado na sessão, ou None se não houver."""
+    usuario = session.get("usuario")
+    return usuario if isinstance(usuario, dict) else None
+
+
+def descartar_requisicoes_expiradas() -> None:
+    """Poda 'requisicoes_recentes' das chaves cuja janela de idempotência já passou.
+
+    Deve ser chamado com 'lock_requisicoes' já adquirido.
+    """
+    agora = time.time()
+    for chave in [
+        chave
+        for chave, marca in requisicoes_recentes.items()
+        if agora - marca >= JANELA_IDEMPOTENCIA_SEGUNDOS
+    ]:
+        requisicoes_recentes.pop(chave, None)
+
+
 @app.route("/", methods=["GET"])
 def index():
     """Renderiza a página principal (SSR com Jinja2)."""
-    # TODO (Aluno 3): Recuperar usuário da sessão, buscar viagens e renderizar index.html
-    pass
+    usuario = usuario_atual()
+    viagens = (
+        obter_viagens_usuario(str(usuario.get("id") or USUARIO_VISITANTE)) or []
+        if usuario
+        else []
+    )
+    return render_template(
+        "index.html",
+        usuario=usuario,
+        client_id=GOOGLE_CLIENT_ID,
+        ufs=ESTADOS_BRASIL.keys(),
+        viagens=viagens,
+    )
 
 
-@app.route("/auth/google/callback", methods=["GET", "POST"])
+@app.route("/auth/google/callback", methods=["POST"])
 def google_callback():
-    """Recebe a credencial JWT do Google e valida 100% no Python."""
-    # TODO (Aluno 3): Receber token JWT do formulário, validar via services.py e salvar session['usuario']
-    pass
+    """Recebe a credencial JWT do Google no campo 'credential' e valida 100% no Python."""
+    credencial = request.form.get("credential", "").strip()
+    if not credencial:
+        return redirect(url_for("index"))
+
+    with httpx.Client(timeout=6.0) as client:
+        usuario = verificar_token_google(client, credencial)
+
+    if not isinstance(usuario, dict):
+        flash("Não foi possível validar sua conta Google. Tente novamente.", "erro")
+        return redirect(url_for("index"))
+
+    session["usuario"] = usuario
+    return redirect(url_for("index"))
 
 
-@app.route("/auth/demo", methods=["GET", "POST"])
+@app.route("/auth/demo", methods=["GET"])
 def login_demo():
     """Modo Visitante para desenvolvimento e testes locais."""
-    # TODO (Aluno 3): Criar sessão volátil em memória para 'Viajante Convidado'
-    pass
+    session["usuario"] = {
+        "id": USUARIO_VISITANTE,
+        "nome": "Viajante Convidado",
+        "email": "visitante@local",
+        "foto": AVATAR_VISITANTE,
+    }
+    return redirect(url_for("index"))
 
 
-@app.route("/auth/logout", methods=["GET", "POST"])
+@app.route("/auth/logout", methods=["GET"])
 def logout():
     """Encerra a sessão e descarta a memória de visitante."""
-    # TODO (Aluno 3): Limpar session e descartar viagens temporárias do visitante
-    pass
+    if (usuario_atual() or {}).get("id") == USUARIO_VISITANTE:
+        viagens_visitante_memoria.pop(USUARIO_VISITANTE, None)
+    session.clear()
+    return redirect(url_for("index"))
 
 
-@app.route("/viagens/criar", methods=["GET", "POST"])
+@app.route("/viagens/criar", methods=["POST"])
 def criar_viagem():
-    """Processa o formulário de criação com deduplicação (locks) e orquestração de APIs."""
-    # TODO (Aluno 3): Implementar lock_requisicoes, orquestração com services/planejamento e Padrão PRG
-    pass
+    """Orquestra as APIs externas sob deduplicação (locks) e persiste o roteiro gerado."""
+    usuario = usuario_atual()
+    if usuario is None:
+        flash("Faça login para planejar roteiros.", "erro")
+        return redirect(url_for("index"))
+
+    origem_cidade = request.form.get("origem_cidade", "").strip()[:80]
+    origem_uf = request.form.get("origem_uf", "").strip().upper()[:2]
+    destino_cidade = request.form.get("destino_cidade", "").strip()[:80]
+    destino_uf = request.form.get("destino_uf", "").strip().upper()[:2]
+    if (
+        not (origem_cidade and destino_cidade)
+        or origem_uf not in ESTADOS_BRASIL
+        or destino_uf not in ESTADOS_BRASIL
+    ):
+        flash("Informe cidade e UF válidas para origem e destino.", "erro")
+        return redirect(url_for("index"))
+
+    user_id = str(usuario.get("id") or USUARIO_VISITANTE)
+    chave = f"{user_id}|{origem_uf}:{origem_cidade}|{destino_uf}:{destino_cidade}"
+
+    with lock_requisicoes:
+        descartar_requisicoes_expiradas()
+        em_curso = chave in requisicoes_ativas
+        recente = (
+            time.time() - requisicoes_recentes.get(chave, 0.0)
+            < JANELA_IDEMPOTENCIA_SEGUNDOS
+        )
+        if em_curso or recente:
+            flash("Este roteiro já está sendo gerado. Aguarde alguns segundos.", "aviso")
+            return redirect(url_for("index"))
+        requisicoes_ativas.add(chave)
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            lat_o, lon_o, nome_o = buscar_coordenadas(client, origem_cidade, origem_uf)
+            lat_d, lon_d, nome_d = buscar_coordenadas(client, destino_cidade, destino_uf)
+            percurso = obter_percurso(client, lat_o, lon_o, lat_d, lon_d)
+            clima = obter_clima(client, lat_d, lon_d)
+
+        roteiro = orquestrar_roteiro(
+            perfil=usuario, clima=clima, rota=percurso, destino=nome_d
+        )
+        adicionar_viagem_usuario(
+            user_id,
+            {
+                "id": uuid.uuid4().hex,
+                "origem": nome_o,
+                "destino": nome_d,
+                "percurso": percurso,
+                "clima": clima,
+                "dicas_destino": roteiro["itinerario"],
+            },
+            usuario,
+        )
+    except Exception:  # noqa: BLE001
+        with lock_requisicoes:
+            requisicoes_ativas.discard(chave)
+        flash("Não foi possível gerar o roteiro agora. Tente em instantes.", "erro")
+        return redirect(url_for("index"))
+
+    # Só marca como recente após o sucesso; em erro a chave é liberada para nova tentativa
+    with lock_requisicoes:
+        requisicoes_ativas.discard(chave)
+        requisicoes_recentes[chave] = time.time()
+
+    return redirect(url_for("index"))
 
 
-@app.route("/viagens/deletar/<string:viagem_id>", methods=["GET", "POST"])
+@app.route("/viagens/deletar/<string:viagem_id>", methods=["POST"])
 def deletar_viagem(viagem_id: str):
-    """Exclui um roteiro da lista do usuário."""
-    # TODO (Aluno 3): Validar sessão e chamar remover_viagem_usuario
-    pass
+    """Exclui um roteiro da lista do usuário, validando a titularidade do ID."""
+    usuario = usuario_atual()
+    if usuario is None:
+        flash("Faça login para gerenciar roteiros.", "erro")
+        return redirect(url_for("index"))
+
+    user_id = str(usuario.get("id") or USUARIO_VISITANTE)
+    ids_usuario = {
+        v.get("id") for v in (obter_viagens_usuario(user_id) or []) if isinstance(v, dict)
+    }
+    if viagem_id not in ids_usuario:
+        flash("Roteiro não encontrado na sua lista.", "erro")
+        return redirect(url_for("index"))
+
+    remover_viagem_usuario(user_id, viagem_id)
+    flash("Roteiro excluído com sucesso.", "sucesso")
+    return redirect(url_for("index"))
 
 
 # ==============================================================================
