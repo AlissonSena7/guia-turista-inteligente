@@ -40,6 +40,14 @@ from services import (
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "guia-turista-secret-key-2026-python")
 
+
+@app.before_request
+def redirecionar_ip_para_localhost():
+    """Garante que a origem seja sempre 'localhost' (e não 127.0.0.1) para conformidade com Google OAuth."""
+    if request.host.startswith("127.0.0.1") and request.method == "GET":
+        url_corrigida = request.url.replace("127.0.0.1", "localhost", 1)
+        return redirect(url_corrigida, code=302)
+
 # Controle de concorrência para leitura e escrita segura no arquivo JSON
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 lock_viagens = Lock()
@@ -399,5 +407,5 @@ def pagina_nao_encontrada(error):
 
 
 if __name__ == "__main__":
-    print(f"🌍 Servidor Flask Guia do Turista rodando em http://localhost:{PORT}")
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    print("[*] Servidor Flask Guia do Turista rodando em http://localhost:8001")
+    app.run(host="localhost", port=8001, debug=True)
