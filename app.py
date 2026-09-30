@@ -399,5 +399,5 @@ def pagina_nao_encontrada(error):
 
 
 if __name__ == "__main__":
-    print(f"🌍 Servidor Flask Guia do Turista rodando em http://localhost:{PORT}")
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    print("[*] Servidor Flask Guia do Turista rodando em http://localhost:5000")
+    app.run(host="localhost", port=5000, debug=True)

@@ -4,8 +4,8 @@ import json
 import os
 from pathlib import Path
 
-# Porta padrão de execução do servidor Flask
-PORT: int = 8001
+# Porta padrão de execução do servidor Flask (5000 exigida pelo Google OAuth)
+PORT: int = int(os.getenv("PORT", "5000"))
 
 # Chaves e credenciais de integração externa
 GEMINI_KEY: str = os.getenv("GEMINI_API_KEY", "")
