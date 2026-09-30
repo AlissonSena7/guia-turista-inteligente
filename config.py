@@ -14,6 +14,13 @@ GOOGLE_CLIENT_ID: str = os.getenv(
     "776335673676-dk7od4ljhh43bio4bppf94i8ou0u9v9i.apps.googleusercontent.com",
 )
 
+# Endpoint público do OSRM (Open Source Routing Machine) para cálculo de rotas.
+# O servidor de demonstração não exige API key e permite variável de ambiente
+# para apontar para uma instância local (ex: http://localhost:5000).
+OSRM_BASE_URL: str = os.getenv(
+    "OSRM_BASE_URL", "https://router.project-osrm.org"
+).rstrip("/")
+
 # Caminhos de arquivos estáticos e bases de dados JSON
 BASE_DIR: Path = Path(__file__).resolve().parent
 DATA_DIR: Path = BASE_DIR / "static" / "data"

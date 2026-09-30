@@ -1,0 +1,15 @@
+# Segredos e variáveis de ambiente (nunca versionar o .env real)
+.env
+
+# Ambientes virtuais
+.venv/
+.venv-1/
+
+# Bytecode e caches do Python
+__pycache__/
+*.py[cod]
+
+# Arquivos do sistema operacional
+desktop.ini
+Thumbs.db
+.DS_Store

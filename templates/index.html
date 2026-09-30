@@ -22,6 +22,18 @@
       <p>Consultor inteligente de viagens com rotas, clima e guia turístico gerado com Python e IA</p>
     </header>
 
+    {% with mensagens = get_flashed_messages(with_categories=true) %}
+      {% if mensagens %}
+        {% for categoria, mensagem in mensagens %}
+          {% set tons = {'erro': ('#fef2f2', '#b91c1c', '#fecaca'), 'aviso': ('#fffbeb', '#b45309', '#fde68a'), 'sucesso': ('#f0fdf4', '#15803d', '#bbf7d0')} %}
+          {% set fundo, texto, borda = tons.get(categoria, tons['sucesso']) %}
+          <div role="alert" style="background: {{ fundo }}; color: {{ texto }}; border: 1px solid {{ borda }}; border-radius: var(--radius-card); padding: 0.85rem 1.1rem; margin-bottom: 1.1rem; font-size: 0.92rem; font-weight: 600;">
+            {{ mensagem }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
     {% if not usuario %}
     <!-- Bloco de Login com Google (Processado 100% no Python via POST /auth/google/callback) -->
     <div class="card" style="text-align: center; padding: 2.2rem 1.2rem;">
