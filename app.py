@@ -40,6 +40,14 @@ from services import (
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "guia-turista-secret-key-2026-python")
 
+
+@app.before_request
+def redirecionar_ip_para_localhost():
+    """Garante que a origem seja sempre 'localhost' (e não 127.0.0.1) para conformidade com Google OAuth."""
+    if request.host.startswith("127.0.0.1") and request.method == "GET":
+        url_corrigida = request.url.replace("127.0.0.1", "localhost", 1)
+        return redirect(url_corrigida, code=302)
+
 # Controle de concorrência para leitura e escrita segura no arquivo JSON
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 lock_viagens = Lock()
